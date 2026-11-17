@@ -1,19 +1,28 @@
-# CampusHub starter (9-service exam)
+# CampusHub Docker deployment
 
-The application code in `app/` is complete and works. Do not change it. Your job is the Docker work.
+## Quick start
+Copy `.env.example` to `.env` and replace all placeholder passwords with local secrets. Then run:
 
-## Service contract
-| Service | Image or build | Port | Notes |
-|---|---|---|---|
-| gateway | nginx-unprivileged | 8080 | only port published to the host |
-| frontend | `app/frontend` (multi-stage) | 8080 | static files from `npm run build` (`dist/`) |
-| api | `app/api` | 3000 | `npm start` runs migration + seed, then the server |
-| worker | same image as api | none | command `node src/worker.js` |
-| db | postgres | 5432 | user, password, db name from env |
-| redis | redis | 6379 | password required (`REDIS_PASSWORD`) |
-| rabbitmq | rabbitmq | 5672 | user and password from env |
-| minio | minio | 9000 | bucket `campushub` is created by the API |
-| mailhog | mailhog | 1025 SMTP, 8025 UI | |
+```bash
+docker compose up -d --build --wait
+```
 
-Gateway routes: `/` to frontend, `/api/` to api, `/storage/` to `minio:9000/campushub/`.
-Environment variable names are in `.env.example`. Copy it to `.env` and keep `.env` out of git.
+Open http://localhost:8080, test http://localhost:8080/api/health, and view test email at http://127.0.0.1:8025.
+
+To inspect status: `docker compose ps`; to inspect API migration: `docker compose logs api`.
+To stop without deleting data: `docker compose down`.
+
+## Architecture
+Browser -> Nginx gateway (8080) -> React frontend (8080), Node API (3000), MinIO storage (9000).
+API -> PostgreSQL (persistent database), Redis (cache), RabbitMQ (registration queue), MinIO (persistent images).
+Worker -> RabbitMQ -> MailHog (test SMTP).
+Only gateway is published on all host interfaces; admin UIs are bound to localhost.
+
+## Design decisions
+1. Multi-stage frontend build keeps Node and build dependencies out of the runtime image.
+2. Three isolated Compose networks limit service communication to required paths.
+3. Named volumes preserve PostgreSQL and MinIO data across `docker compose down` and restarts.
+
+## Verification
+`docker compose ps`; `curl http://localhost:8080/api/health`; `curl http://localhost:8080/api/events`.
+The grading script is written for Bash: `DC='docker compose' ENV_FILE=.env bash ./grade.sh` from a Bash-compatible environment. Warning: grade.sh runs `docker compose down -v` and deletes named volume data.

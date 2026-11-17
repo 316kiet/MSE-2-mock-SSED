@@ -1,0 +1,151 @@
+name: campushub
+x-api-env: &api-env
+  PORT: ${PORT:-3000}
+  PGHOST: ${PGHOST:-db}
+  PGUSER: ${PGUSER:-campus}
+  PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
+  PGDATABASE: ${PGDATABASE:-campushub}
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+  RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+  RABBITMQ_USER: ${RABBITMQ_USER:-campus}
+  RABBITMQ_PASS: ${RABBITMQ_PASS:?Set RABBITMQ_PASS in .env}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio}
+  MINIO_PORT: ${MINIO_PORT:-9000}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
+  MINIO_BUCKET: ${MINIO_BUCKET:-campushub}
+  SMTP_HOST: ${SMTP_HOST:-mailhog}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+x-limits: &limits
+  cpus: '0.50'
+  mem_limit: 384m
+services:
+  gateway:
+    image: nginxinc/nginx-unprivileged:stable-alpine
+    volumes:
+      - ./app/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - '${GATEWAY_PORT:-8080}:8080'
+    networks: [frontend, backend, data]
+    depends_on:
+      frontend: {condition: service_healthy}
+      api: {condition: service_healthy}
+    restart: unless-stopped
+    cpus: '0.25'
+    mem_limit: 128m
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8080/api/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+  frontend:
+    build: ./app/frontend
+    networks: [frontend]
+    restart: unless-stopped
+    cpus: '0.25'
+    mem_limit: 128m
+  api:
+    image: campushub-api:latest
+    build: ./app/api
+    environment: *api-env
+    networks: [backend, data]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    restart: unless-stopped
+    <<: *limits
+  worker:
+    image: campushub-api:latest
+    build: ./app/api
+    command: ['npm', 'run', 'worker']
+    environment: *api-env
+    networks: [backend]
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+      mailhog: {condition: service_started}
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    cpus: '0.25'
+    mem_limit: 192m
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${PGUSER:-campus}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
+      POSTGRES_DB: ${PGDATABASE:-campushub}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [data]
+    restart: unless-stopped
+    <<: *limits
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 15
+  redis:
+    image: redis:7-alpine
+    command: ['sh', '-c', 'exec redis-server --requirepass "$$REDIS_PASSWORD"']
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    networks: [backend]
+    restart: unless-stopped
+    cpus: '0.25'
+    mem_limit: 128m
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 15
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-campus}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?Set RABBITMQ_PASS in .env}
+    ports: ['127.0.0.1:15672:15672']
+    networks: [backend]
+    restart: unless-stopped
+    cpus: '0.50'
+    mem_limit: 512m
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+  minio:
+    image: dappros/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
+    volumes: [minio_data:/data]
+    ports: ['127.0.0.1:9001:9001']
+    networks: [data]
+    restart: unless-stopped
+    <<: *limits
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports: ['127.0.0.1:8025:8025']
+    networks: [backend]
+    restart: unless-stopped
+    cpus: '0.25'
+    mem_limit: 128m
+networks:
+  frontend: {}
+  backend: {}
+  data: {}
+volumes:
+  postgres_data: {}
+  minio_data: {}

@@ -1,0 +1,6 @@
+.env
+node_modules/
+grading.log
+grade-debug.txt
+ch-test.png
+campushub_fast/
